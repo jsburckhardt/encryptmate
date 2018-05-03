@@ -3,81 +3,100 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/md5"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/base64"
+	"errors"
 	"flag"
-	"fmt"
 	"io"
+	"log"
+	"os"
 )
 
-func createHash(key string) string {
-	hasher := md5.New()
-	hasher.Write([]byte(key))
-	return hex.EncodeToString(hasher.Sum(nil))
-}
-
-func encrypt(data []byte, passphrase string) []byte {
-	block, _ := aes.NewCipher([]byte(createHash(passphrase)))
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		fmt.Println("first")
-		panic(err.Error())
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		fmt.Println("second")
-		panic(err.Error())
-	}
-	ciphertext := gcm.Seal(nonce, nonce, data, nil)
-	return ciphertext
-}
-
-func decrypt(data []byte, passphrase string) []byte {
-	key := []byte(createHash(passphrase))
+func encrypt(key []byte, message string) (encmess string, err error) {
+	plainText := []byte(message)
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		fmt.Println("third")
-		panic(err.Error())
+		return
 	}
-	gcm, err := cipher.NewGCM(block)
+
+	//IV needs to be unique, but doesn't have to be secure.
+	//It's common to put it at the beginning of the ciphertext.
+	cipherText := make([]byte, aes.BlockSize+len(plainText))
+	iv := cipherText[:aes.BlockSize]
+	if _, err = io.ReadFull(rand.Reader, iv); err != nil {
+		return
+	}
+
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(cipherText[aes.BlockSize:], plainText)
+
+	//returns to base64 encoded string
+	encmess = base64.URLEncoding.EncodeToString(cipherText)
+	return
+}
+
+func decrypt(key []byte, securemess string) (decodedmess string, err error) {
+	cipherText, err := base64.URLEncoding.DecodeString(securemess)
 	if err != nil {
-		fmt.Println("fourth")
-		panic(err.Error())
+		return
 	}
-	nonceSize := gcm.NonceSize()
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		fmt.Println("fifth")
-		panic(err.Error())
+		return
 	}
-	return plaintext
+
+	if len(cipherText) < aes.BlockSize {
+		err = errors.New("Ciphertext block size is too short!")
+		return
+	}
+
+	//IV needs to be unique, but doesn't have to be secure.
+	//It's common to put it at the beginning of the ciphertext.
+	iv := cipherText[:aes.BlockSize]
+	cipherText = cipherText[aes.BlockSize:]
+
+	stream := cipher.NewCFBDecrypter(block, iv)
+	// XORKeyStream can work in-place if the two arguments are the same.
+	stream.XORKeyStream(cipherText, cipherText)
+
+	decodedmess = string(cipherText)
+	return
 }
 
 func main() {
-
 	keyPtr := flag.String("key", "", "Encryption/Decryption Key ")
 	stringPtr := flag.String("value", "", "string to encrypt or decrypt ")
 	encryptPtr := flag.Bool("encrypt", false, "encrypt action")
 	decryptPtr := flag.Bool("decrypt", false, "decrypt action")
 
 	flag.Parse()
+	cipherKey := []byte("")
 
-	//fmt.Println("key:", *keyPtr)
-	//fmt.Println("string:", *stringPtr)
-	//fmt.Println("encrypt?", *encryptPtr)
-	//fmt.Println("decrypt?", *decryptPtr)
-	//fmt.Println("tail:", flag.Args())
+	if *keyPtr != "" {
+		cipherKey = []byte(*keyPtr)
+	} else if os.Getenv("GO_ENCRYPTION_KEY") != "" {
+		cipherKey = []byte(os.Getenv("GO_ENCRYPTION_KEY"))
+	} else {
+		panic("no key define to encrypt")
+	}
+
+	msg := *stringPtr
+	enc := *stringPtr
 
 	if *encryptPtr {
-		ciphertext := encrypt([]byte(*stringPtr), *keyPtr)
-		fmt.Printf("Encrypted: %x\n", ciphertext)
+		if encrypted, err := encrypt(cipherKey, msg); err != nil {
+			log.Println(err)
+		} else {
+			log.Printf("ENCRYPTED: %s\n", encrypted)
+		}
 	}
+
 	if *decryptPtr {
-		plaintext := decrypt([]byte(*stringPtr), *keyPtr)
-		fmt.Printf("Decrypted: %s\n", plaintext)
+		if decrypted, err := decrypt(cipherKey, enc); err != nil {
+			log.Println(err)
+		} else {
+			log.Printf("DECRYPTED: %s\n", decrypted)
+		}
 	}
-	//encryptFile("sample.txt", []byte("Hello World"), "password1")
-	//fmt.Println(string(decryptFile("sample.txt", "password1")))
 }
